@@ -44,8 +44,8 @@ task :tests do
   print_info "Running Unit Tests"
   # we can't use SPM directly because it doesn't link rpath and thus often uses wrong dylib
   # sh %Q(swift test)
-  xcpretty %Q(xcodebuild -scheme sourcery -destination platform=macOS,arch=x86_64)
-  xcpretty %Q(xcodebuild -scheme Sourcery-Package -destination platform=macOS,arch=x86_64 test)
+  xcpretty %Q(xcodebuild -scheme sourcery -destination platform=macOS)
+  xcpretty %Q(xcodebuild -scheme Sourcery-Package -destination platform=macOS test)
 end
 
 desc "Delete the build/ directory"
@@ -54,31 +54,34 @@ task :clean do
   sh %Q(rm -fr build)
 end
 
-task :build, [:build_fat] do |t, args|
-  args.with_defaults(:build_fat => false)
-  print_info "Building project (fat: #{args[:build_fat]})"
-  sh %Q(swift build -c release --disable-sandbox --build-path #{BUILD_DIR})
+task :build, [:build_universal] do |t, args|
+  # Default to thin library for brew
+  args.with_defaults(:build_universal => false)
+  print_info "Building project (Universal: #{args[:build_universal]})"
+
   sh %Q(rm -fr #{CLI_DIR})
   sh %Q(mkdir -p "#{CLI_DIR}bin")
   sh %Q(mkdir -p "#{CLI_DIR}lib")
-  
-if args[:build_fat] != true  # Build thin Library
-  ARCH = `uname -m`.chomp
-  sh %Q(lipo -thin #{ARCH} lib_InternalSwiftSyntaxParser.dylib -output #{CLI_DIR}lib/lib_InternalSwiftSyntaxParser.dylib)
-else
-  sh %Q(cp lib_InternalSwiftSyntaxParser.dylib #{CLI_DIR}lib)
-end
+
+  if args[:build_universal] == true
+    sh %Q(swift build -c release --arch arm64 --arch x86_64 --disable-sandbox --build-path #{BUILD_DIR})
+    sh %Q(cp lib_InternalSwiftSyntaxParser.dylib #{CLI_DIR}lib)
+    `mv #{BUILD_DIR}apple/Products/Release/sourcery #{CLI_DIR}bin/`
+  else
+    ARCH = `uname -m`.chomp
+    sh %Q(swift build -c release --arch #{ARCH} --disable-sandbox --build-path #{BUILD_DIR})
+    sh %Q(lipo -thin #{ARCH} lib_InternalSwiftSyntaxParser.dylib -output #{CLI_DIR}lib/lib_InternalSwiftSyntaxParser.dylib)
+    `mv #{BUILD_DIR}release/sourcery #{CLI_DIR}bin/`
+  end
 
   sh %Q(cp SourceryJS/Resources/ejs.js #{CLI_DIR}bin)
-  `mv #{BUILD_DIR}release/sourcery #{CLI_DIR}bin/`
-  #`mv #{BUILD_DIR}release/Sourcery_SourceryJS.bundle #{CLI_DIR}lib/`
   `install_name_tool -delete_rpath @loader_path #{CLI_DIR}bin/sourcery`
   `install_name_tool -delete_rpath /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx #{CLI_DIR}bin/sourcery`
   `install_name_tool -add_rpath "@executable_path/../lib" "#{CLI_DIR}bin/sourcery"`
   sh %Q(rm -fr #{BUILD_DIR})
 end
 
-task :fat_build do
+task :build_universal do
   Rake::Task[:build].invoke(true)
 end
 
@@ -132,7 +135,7 @@ namespace :release do
   task :prepare => [:clean, :install_dependencies, :check_environment_variables, :check_docs, :update_metadata, :generate_internal_boilerplate_code, :tests]
 
   desc 'Build the current version and release it to GitHub, CocoaPods and Homebrew'
-  task :build_and_deploy => [:check_versions, :fat_build, :tag_release, :push_to_origin, :github, :cocoapods, :homebrew]
+  task :build_and_deploy => [:check_versions, :build_universal, :tag_release, :push_to_origin, :github, :cocoapods, :homebrew]
 
   desc 'Create a new release on GitHub, CocoaPods and Homebrew'
   task :new => [:prepare, :build_and_deploy]
